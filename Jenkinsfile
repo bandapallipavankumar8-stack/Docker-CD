@@ -4,19 +4,19 @@ pipeline {
     environment {
         // Target Amazon Linux VM Configuration Details
         VM_IP        = '3.110.118.236'
-        VM_USER      = 'ec2-user'      // Correct default user account profile for Amazon Linux
+        VM_USER      = 'ec2-user'      // Default administrative user account for Amazon Linux
         SSH_CREDS_ID = 'vm-ssh-key'    // The ID of the private key file saved in Jenkins
     }
 
     stages {
         stage('Checkout Code') {
             steps {
-                echo 'Pulling the latest code files from your GitHub repository...'
+                echo 'Pulling the deployment pipeline configuration...'
                 checkout scm
             }
         }
 
-        stage('Install and Deploy on Amazon Linux VM') {
+        stage('Install Nginx and Deploy on Amazon Linux VM') {
             steps {
                 // Uses the Jenkins SSH agent plugin to inject your private key file securely
                 sshagent(credentials: ["${SSH_CREDS_ID}"]) {
@@ -24,33 +24,35 @@ pipeline {
                     
                     sh """
                         ssh -o StrictHostKeyChecking=no ${VM_USER}@${VM_IP} '
-                            echo "Successfully authenticated! Starting Red Hat environment configuration..."
+                            echo "Successfully authenticated! Installing native web engine..."
                             
-                            # 1. Update the server package manager repository cache
-                            sudo yum update -y
+                            # 1. Clean package metadata and update repository references
+                            sudo dnf clean all
+                            sudo dnf makecache
                             
-                            # 2. Install the native Nginx web server engine, curl, and unzip utilities
-                            sudo yum install nginx curl unzip -y
+                            # 2. Install native Nginx web server, curl, and unzip tools
+                            sudo dnf install -y nginx curl unzip
                             
-                            # 3. Ensure Nginx service is enabled and starts automatically if the instance reboots
-                            sudo systemctl enable --now nginx
+                            # 3. Enable Nginx and start the background service
+                            sudo systemctl enable nginx
+                            sudo systemctl start nginx
                             
-                            # 4. Clean out any default Amazon Linux Nginx landing page placeholder files
+                            # 4. Clean out any default placeholder greeting pages
                             sudo rm -rf /usr/share/nginx/html/*
                             
-                            # 5. Pull your live code branch bundle package directly from GitHub
+                            # 5. Download your live storefront page package from GitHub
                             curl -L -o repo.zip https://github.com
                             
-                            # 6. Extract the zipped repository archive layer folders
+                            # 6. Extract the zipped repository archive
                             unzip -o repo.zip
                             
-                            # 7. Copy your bookstore index.html file straight into the live Amazon Nginx web directory
+                            # 7. Copy your bookstore index.html file straight into the live Nginx web directory
                             sudo cp Docker-CI-main/index.html /usr/share/nginx/html/
                             
-                            # 8. Purge temporary setup files from the directory tree to keep the server clean
+                            # 8. Purge temporary setup files to keep the server space clean
                             rm -rf repo.zip Docker-CI-main
                             
-                            # 9. Restart the system Nginx daemon tool to refresh and render your bookstore layout
+                            # 9. Force-restart the daemon to apply your custom webpage layout
                             sudo systemctl restart nginx
                             
                             echo "Success! Your bookstore web app is live on Amazon Linux."
