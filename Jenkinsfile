@@ -44,10 +44,13 @@ pipeline {
                             # 4. Clean out any default Amazon Linux placeholder greeting files
                             sudo rm -rf /usr/share/nginx/html/*
                             
-                            # 5. Create a clean isolated temporary environment folder path
-                            mkdir -p ~/s3-package-deploy
-                            cd ~/s3-package-deploy
-                            rm -f ${PACKAGE_NAME} index.html Dockerfile
+                            # 5. Create a clean root-accessible deployment path to bypass home directory limits
+                            sudo mkdir -p /var/www/html
+                            sudo rm -rf /var/www/html/*
+                            cd /tmp
+                            sudo rm -rf s3-package-deploy
+                            mkdir -p s3-package-deploy
+                            cd s3-package-deploy
                             
                             # 6. Securely stream and download the file directly from your explicit S3 asset bucket link
                             echo "Streaming artifact bundle from S3 storage layer..."
@@ -62,23 +65,39 @@ pipeline {
                                 mv */index.html . 2>/dev/null || true
                             fi
                             
-                            # 9. Copy your custom bookstore index.html file straight into the live Nginx web directory
+                            # 9. Copy your custom bookstore index.html file straight into both common web directories
                             sudo cp index.html /usr/share/nginx/html/
+                            sudo cp index.html /var/www/html/
                             
-                            # 10. CRITICAL ANTI-403 PERMISSION FIXES: Grant Nginx access to the folder path and files
-                            echo "Applying permissions and ownership rules to prevent 403 Forbidden errors..."
-                            sudo chmod 755 /usr/share/nginx /usr/share/nginx/html
-                            sudo chown -R nginx:nginx /usr/share/nginx/html/* 2>/dev/null || true
-                            sudo chmod 644 /usr/share/nginx/html/index.html 2>/dev/null || true
+                            # 10. CRITICAL ANTI-403 PERMISSION FIXES: Grant read and execute rights to the paths
+                            echo "Applying aggressive permissions and ownership rules to kill the 403 error..."
                             
-                            # 11. Clean up the temporary workspace directories from the user system folder tree
-                            cd ~
-                            rm -rf ~/s3-package-deploy
+                            # Allow anyone to execute permissions up the folder tree
+                            sudo chmod 755 /usr /usr/share /usr/share/nginx /usr/share/nginx/html
+                            sudo chmod 755 /var /var/www /var/www/html
                             
-                            # 12. Restart the native Nginx tool service engine to hard-refresh your bookshop interface page
+                            # Set files as publicly readable
+                            sudo chmod 644 /usr/share/nginx/html/index.html
+                            sudo chmod 644 /var/www/html/index.html
+                            
+                            # Assign ownership explicitly to the nginx system engine account
+                            sudo chown -R nginx:nginx /usr/share/nginx/html
+                            sudo chown -R nginx:nginx /var/www/html
+                            
+                            # 11. SELINUX FIX: Reset security labels so the OS allows Nginx to read the new file
+                            echo "Configuring SELinux security context policies..."
+                            sudo chcon -Rt httpd_sys_content_t /usr/share/nginx/html 2>/dev/null || true
+                            sudo chcon -Rt httpd_sys_content_t /var/www/html 2>/dev/null || true
+                            
+                            # 12. Clean up the temporary workspace directory
+                            cd /tmp
+                            rm -rf s3-package-deploy
+                            
+                            # 13. Restart Nginx to force-refresh all changes cleanly
                             sudo systemctl restart nginx
                             
-                            echo "Success! Your bookstore package has been retrieved from S3 and deployed live to Port 80."
+                            echo "Deployment finished! Checking local response..."
+                            curl -I http://localhost
                         '
                     """
                 }
