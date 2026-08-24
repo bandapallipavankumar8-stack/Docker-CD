@@ -2,14 +2,15 @@ pipeline {
     agent any
 
     environment {
-        // Direct AWS S3 Storage Artifact Endpoint URL
-        S3_PACKAGE_URL = 'https://amazonaws.com'
-        PACKAGE_NAME   = 'bookstore-package.zip'
+        // Explicit S3 Bucket Name
+        S3_BUCKET    = 'code-version'
+        PACKAGE_NAME = 'bookstore-package.zip'
+        AWS_CREDS_ID = 'aws-credentials-id'  // Matches your Jenkins AWS credentials store ID
         
         // Target Amazon Linux VM Configuration Details
-        VM_IP          = '3.110.118.236'
-        VM_USER        = 'ec2-user'      // Default administrator profile for Amazon Linux
-        SSH_CREDS_ID   = 'vm-ssh-key'    // The ID of the private key file saved in Jenkins
+        VM_IP        = '3.110.118.236'
+        VM_USER      = 'ec2-user'      
+        SSH_CREDS_ID = 'vm-ssh-key'    // Matches your Jenkins VM private key store ID
     }
 
     stages {
@@ -20,86 +21,71 @@ pipeline {
             }
         }
 
-        stage('Fetch S3 Asset and Deploy to VM') {
+        stage('Secure S3 Fetch and Deploy') {
             steps {
-                // Uses the Jenkins SSH agent plugin to inject your private key file securely
-                sshagent(credentials: ["${SSH_CREDS_ID}"]) {
-                    echo "Establishing secure admin connection to Amazon Linux VM: ${VM_IP}..."
+                // 1. Pull both your secure AWS keys and your SSH key from the Jenkins vault safely
+                withCredentials([usernamePassword(credentialsId: "${AWS_CREDS_ID}", 
+                                                 usernameVariable: 'AWS_ACCESS_KEY_ID', 
+                                                 passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
                     
-                    sh """
-                        ssh -o StrictHostKeyChecking=no ${VM_USER}@${VM_IP} '
-                            echo "Successfully authenticated! Refreshing package manager caches..."
-                            
-                            # 1. Force refresh yum configuration caches
-                            sudo yum clean all
-                            sudo yum makecache
-                            
-                            # 2. Ensure Nginx, curl, and unzip tools are completely installed on the server
-                            sudo yum install -y nginx curl unzip --skip-broken
-                            
-                            # 3. Verify Nginx system daemon service is enabled and actively running
-                            sudo systemctl enable nginx
-                            sudo systemctl start nginx
-                            
-                            # 4. Clean out any default Amazon Linux placeholder greeting files
-                            sudo rm -rf /usr/share/nginx/html/*
-                            
-                            # 5. Create a clean root-accessible deployment path to bypass home directory limits
-                            sudo mkdir -p /var/www/html
-                            sudo rm -rf /var/www/html/*
-                            cd /tmp
-                            sudo rm -rf s3-package-deploy
-                            mkdir -p s3-package-deploy
-                            cd s3-package-deploy
-                            
-                            # 6. Securely stream and download the file directly from your explicit S3 asset bucket link
-                            echo "Streaming artifact bundle from S3 storage layer..."
-                            curl -L -o ${PACKAGE_NAME} ${S3_PACKAGE_URL}
-                            
-                            # 7. Unpack your archived code package layers 
-                            unzip -o ${PACKAGE_NAME}
-                            
-                            # 8. FIX POTENTIAL NESTED SUB-FOLDERS: If the zip created a subfolder, bring index.html out to the root
-                            if [ ! -f "index.html" ]; then
-                                echo "index.html not found in root, looking in subdirectories..."
-                                mv */index.html . 2>/dev/null || true
-                            fi
-                            
-                            # 9. Copy your custom bookstore index.html file straight into both common web directories
-                            sudo cp index.html /usr/share/nginx/html/
-                            sudo cp index.html /var/www/html/
-                            
-                            # 10. CRITICAL ANTI-403 PERMISSION FIXES: Grant read and execute rights to the paths
-                            echo "Applying aggressive permissions and ownership rules to kill the 403 error..."
-                            
-                            # Allow anyone to execute permissions up the folder tree
-                            sudo chmod 755 /usr /usr/share /usr/share/nginx /usr/share/nginx/html
-                            sudo chmod 755 /var /var/www /var/www/html
-                            
-                            # Set files as publicly readable
-                            sudo chmod 644 /usr/share/nginx/html/index.html
-                            sudo chmod 644 /var/www/html/index.html
-                            
-                            # Assign ownership explicitly to the nginx system engine account
-                            sudo chown -R nginx:nginx /usr/share/nginx/html
-                            sudo chown -R nginx:nginx /var/www/html
-                            
-                            # 11. SELINUX FIX: Reset security labels so the OS allows Nginx to read the new file
-                            echo "Configuring SELinux security context policies..."
-                            sudo chcon -Rt httpd_sys_content_t /usr/share/nginx/html 2>/dev/null || true
-                            sudo chcon -Rt httpd_sys_content_t /var/www/html 2>/dev/null || true
-                            
-                            # 12. Clean up the temporary workspace directory
-                            cd /tmp
-                            rm -rf s3-package-deploy
-                            
-                            # 13. Restart Nginx to force-refresh all changes cleanly
-                            sudo systemctl restart nginx
-                            
-                            echo "Deployment finished! Checking local response..."
-                            curl -I http://localhost
-                        '
-                    """
+                    sshagent(credentials: ["${SSH_CREDS_ID}"]) {
+                        echo "Connecting securely to Amazon Linux VM: ${VM_IP}..."
+                        
+                        sh """
+                            ssh -o StrictHostKeyChecking=no ${VM_USER}@${VM_IP} '
+                                echo "Successfully logged in! Refreshing system utilities..."
+                                
+                                # 2. Ensure Nginx, unzip, and AWS CLI are fully installed on the machine
+                                sudo yum install -y nginx unzip awscli --skip-broken
+                                
+                                # 3. Make sure the Nginx web engine is turned on and active
+                                sudo systemctl enable --now nginx
+                                
+                                # 4. Create an isolated workspace folder inside /tmp to bypass root blocks
+                                cd /tmp
+                                sudo rm -rf s3-secure-deploy
+                                mkdir -p s3-secure-deploy
+                                cd s3-secure-deploy
+                                
+                                # 5. Pass your Jenkins AWS keys into the shell environment memory
+                                export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+                                export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+                                export AWS_DEFAULT_REGION=ap-south-1
+                                
+                                echo "Downloading your package securely via AWS CLI from bucket: ${S3_BUCKET}..."
+                                aws s3 cp s3://${S3_BUCKET}/${PACKAGE_NAME} .
+                                
+                                # 6. Extract the zip file layers completely
+                                echo "Extracting application assets..."
+                                unzip -o ${PACKAGE_NAME}
+                                
+                                # 7. Handle nested sub-folders automatically if they exist
+                                if [ ! -f "index.html" ]; then
+                                    mv */index.html . 2>/dev/null || true
+                                fi
+                                
+                                # 8. Wipe out old configs and copy your fresh code file over to the root path
+                                sudo rm -rf /usr/share/nginx/html/*
+                                sudo cp index.html /usr/share/nginx/html/
+                                
+                                # 9. Fix directory tree read and execute paths to permanently stop 403 blocks
+                                sudo chmod 755 /usr /usr/share /usr/share/nginx /usr/share/nginx/html
+                                sudo chmod 644 /usr/share/nginx/html/index.html
+                                sudo chown -R nginx:nginx /usr/share/nginx/html
+                                
+                                # 10. Clear SELinux context rules for modern web hosting security policies
+                                sudo chcon -Rt httpd_sys_content_t /usr/share/nginx/html 2>/dev/null || true
+                                
+                                # 11. Clean up temporary deployment paths from the server
+                                cd /tmp
+                                rm -rf s3-secure-deploy
+                                
+                                # 12. Restart Nginx to pick up your live bookstore landing page layout
+                                sudo systemctl restart nginx
+                                echo "Deployment script execution finished!"
+                            '
+                        """
+                    }
                 }
             }
         }
