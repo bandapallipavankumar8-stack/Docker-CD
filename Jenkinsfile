@@ -2,10 +2,14 @@ pipeline {
     agent any
 
     environment {
+        // Direct AWS S3 Storage Artifact Endpoint URL
+        S3_PACKAGE_URL = 'https://code-version.s3.ap-south-1.amazonaws.com/bookstore-package.zip'
+        PACKAGE_NAME   = 'bookstore-package.zip'
+        
         // Target Amazon Linux VM Configuration Details
-        VM_IP        = '3.110.118.236'
-        VM_USER      = 'ec2-user'      // Default administrative user account for Amazon Linux
-        SSH_CREDS_ID = 'vm-ssh-key'    // The ID of the private key file saved in Jenkins
+        VM_IP          = '3.110.118.236'
+        VM_USER        = 'ec2-user'      // Default administrator profile for Amazon Linux
+        SSH_CREDS_ID   = 'vm-ssh-key'    // The ID of the private key file saved in Jenkins
     }
 
     stages {
@@ -16,7 +20,7 @@ pipeline {
             }
         }
 
-        stage('Install Nginx and Deploy on Amazon Linux VM') {
+        stage('Fetch S3 Asset and Deploy to VM') {
             steps {
                 // Uses the Jenkins SSH agent plugin to inject your private key file securely
                 sshagent(credentials: ["${SSH_CREDS_ID}"]) {
@@ -24,38 +28,45 @@ pipeline {
                     
                     sh """
                         ssh -o StrictHostKeyChecking=no ${VM_USER}@${VM_IP} '
-                            echo "Successfully authenticated! Installing native web engine..."
+                            echo "Successfully authenticated! Initializing package manager refresh..."
                             
-                            # 1. Clean package metadata and update repository references
-                            sudo dnf clean all
-                            sudo dnf makecache
+                            # 1. Force refresh yum configuration caches
+                            sudo yum clean all
+                            sudo yum makecache
                             
-                            # 2. Install native Nginx web server, curl, and unzip tools
-                            sudo dnf install -y nginx curl unzip
+                            # 2. Ensure Nginx, curl, and unzip tools are completely installed on the server hardware
+                            sudo yum install -y nginx curl unzip --skip-broken
                             
-                            # 3. Enable Nginx and start the background service
+                            # 3. Verify Nginx system daemon service is enabled and actively running
                             sudo systemctl enable nginx
                             sudo systemctl start nginx
                             
-                            # 4. Clean out any default placeholder greeting pages
+                            # 4. Clean out any default Amazon Linux placeholder greeting pages
                             sudo rm -rf /usr/share/nginx/html/*
                             
-                            # 5. Download your live storefront page package from GitHub
-                            curl -L -o repo.zip https://github.com
+                            # 5. Create a clean isolated temporary environment folder path
+                            mkdir -p ~/s3-package-deploy
+                            cd ~/s3-package-deploy
+                            rm -f ${PACKAGE_NAME} index.html Dockerfile
                             
-                            # 6. Extract the zipped repository archive
-                            unzip -o repo.zip
+                            # 6. Securely stream and download the file directly from your explicit S3 asset bucket link
+                            echo "Streaming artifact bundle from S3 storage layer..."
+                            curl -L -o ${PACKAGE_NAME} ${S3_PACKAGE_URL}
                             
-                            # 7. Copy your bookstore index.html file straight into the live Nginx web directory
-                            sudo cp Docker-CI-main/index.html /usr/share/nginx/html/
+                            # 7. Unpack your archived code package layers 
+                            unzip -o ${PACKAGE_NAME}
                             
-                            # 8. Purge temporary setup files to keep the server space clean
-                            rm -rf repo.zip Docker-CI-main
+                            # 8. Copy your custom bookstore index.html file straight into the live Nginx web directory
+                            sudo cp index.html /usr/share/nginx/html/
                             
-                            # 9. Force-restart the daemon to apply your custom webpage layout
+                            # 9. Clean up the temporary workspace directories from the user system folder tree
+                            cd ~
+                            rm -rf ~/s3-package-deploy
+                            
+                            # 10. Restart the native Nginx tool service engine to hard-refresh your bookshop interface page
                             sudo systemctl restart nginx
                             
-                            echo "Success! Your bookstore web app is live on Amazon Linux."
+                            echo "Success! Your bookstore package has been retrieved from S3 and deployed live to Port 80."
                         '
                     """
                 }
