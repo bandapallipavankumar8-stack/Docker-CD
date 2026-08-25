@@ -5,60 +5,60 @@ pipeline {
         // AWS Settings
         AWS_BUCKET       = 'code-version'
         ZIP_NAME         = 'bookstore-package.zip'
-        AWS_CRED_ID      = 'aws-credentials' // Jenkins AWS Credential ID (if used)
+        
+        // YOUR UPDATED JENKINS CREDENTIAL ID
+        AWS_CRED_ID      = 'aws-credentials-id' 
         
         // Amazon Linux EC2 Settings
         EC2_USER         = 'ec2-user'        
         EC2_IP           = '43.204.219.68'   
-        SSH_CRED_ID      = 'ec2-ssh-key'     // Jenkins SSH Private Key Credential ID
         
-        // Docker App Settings
+        // PLEASE VERIFY THIS SSH CREDENTIAL ID MATCHES JENKINS
+        SSH_CRED_ID      = 'ec2-ssh-key'     
+        
+        // Docker Settings
         IMAGE_NAME       = 'bookstore-app'
         CONTAINER_NAME   = 'bookstore-container'
     }
 
     stages {
-        stage('CD: Fetch from S3') {
+        stage('CD: Checkout Config') {
             steps {
-                echo "Downloading ${ZIP_NAME} from S3 bucket..."
-                // Downloads the specific zip file created by your CI step
-                withCredentials([aws(accessKeyVariable: 'AWS_ACCESS_KEY_ID', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY', credentialsId: "${AWS_CRED_ID}")]) {
-                    sh "aws s3 cp s3://${AWS_BUCKET}/${ZIP_NAME} ."
-                }
+                echo 'Pulling the deployment pipeline configuration...'
             }
         }
 
-        stage('CD: Deploy to Amazon Linux EC2') {
+        stage('CD: Fetch and Deploy Docker Container') {
             steps {
-                // Securely injects your admin-configured SSH private key
-                sshagent([SSH_CRED_ID]) {
-                    echo "Transferring package to EC2: ${EC2_IP}..."
-                    
-                    // 1. Send the zip file securely to the target EC2 machine
-                    sh "scp -o StrictHostKeyChecking=no ${ZIP_NAME} ${EC2_USER}@${EC2_IP}:/home/${EC2_USER}/"
+                // Securely pulls your Username (Access Key) and Password (Secret Key)
+                withCredentials([usernamePassword(credentialsId: "${AWS_CRED_ID}", passwordVariable: 'AWS_SECRET_ACCESS_KEY', usernameVariable: 'AWS_ACCESS_KEY_ID')]) {
+                    echo "Downloading package from S3..."
+                    sh "aws s3 cp s3://${AWS_BUCKET}/${ZIP_NAME} ."
+                }
 
-                    echo "Unpacking and running application inside Docker container..."
-                    // 2. SSH into EC2 to wipe the old app folder, unzip the new one, and re-build the container
+                // Deploy package over SSH using your Jenkins SSH key
+                sshagent([SSH_CRED_ID]) {
+                    echo "Deploying to Amazon Linux at ${EC2_IP}..."
+                    
+                    // Copy file to EC2 home directory
+                    sh "scp -o StrictHostKeyChecking=no ${ZIP_NAME} ${EC2_USER}@${EC2_IP}:/home/${EC2_USER}/"
+                    
+                    // Run deployment steps inside target instance
                     sh """
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} '
-                            # Create and reset target workspace
                             mkdir -p /home/${EC2_USER}/app
                             rm -rf /home/${EC2_USER}/app/*
                             
-                            # Extract files into workspace
+                            # Extract package content
                             unzip -o /home/${EC2_USER}/${ZIP_NAME} -d /home/${EC2_USER}/app/
                             rm -f /home/${EC2_USER}/${ZIP_NAME}
                             
                             cd /home/${EC2_USER}/app
                             
-                            # Clean up old container version if it exists
+                            # Re-create Docker container
                             docker stop ${CONTAINER_NAME} || true
                             docker rm ${CONTAINER_NAME} || true
-                            
-                            # Build image using your updated Dockerfile
                             docker build -t ${IMAGE_NAME}:latest .
-                            
-                            # Fire up the active application container
                             docker run -d -p 80:80 --name ${CONTAINER_NAME} ${IMAGE_NAME}:latest
                         '
                     """
@@ -69,7 +69,7 @@ pipeline {
 
     post {
         always {
-            echo 'Cleaning up Jenkins CD workspace...'
+            echo 'Cleaning up Jenkins workspace...'
             cleanWs()
         }
     }
